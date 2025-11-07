@@ -589,7 +589,7 @@ impl Node for UserFeedbackNode {
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
         match result {
-            Ok(value) => {
+            Ok(_value) => {
                 // Assuming we want to store feedback status in shared_state
                 // shared_state.user_feedback_status = value.get("feedback_status").map(|s| s.to_string());
                 shared_state.ai_response.status = AiStatus::Success;

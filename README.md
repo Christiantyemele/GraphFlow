@@ -1,12 +1,6 @@
-<h1 align="center">GraphFlow: Agentic Graph Builder (Rust)</h1>
 
-<p align="center">
-  <a href="https://github.com/The-Pocket/PocketFlow" target="_blank">
-    <img 
-      src="./assets/banner.png" width="800"
-    />
-  </a>
-</p>
+![Banner](./assets/banner2.png)
+
 
 GraphFlow is a Rust CLI demo built with [Pocket Flow](https://github.com/The-Pocket/PocketFlow). It turns short natural-language descriptions or edge lists into graph structures using LLMs, with tiered routing:
 
@@ -77,7 +71,7 @@ GraphFlow is a Rust CLI demo built with [Pocket Flow](https://github.com/The-Poc
   - Pro tier with OpenAI:
     ```bash
     export OPENAI_API_KEY=sk-openai-...
-    echo "Team -> Project -> Tasks" | cargo run -- --tier pro --user alice
+    echo "Team -> Project -> Tasks" | cargo run -- --tier pro --user test
     ```
   - From file:
     ```bash
@@ -115,11 +109,11 @@ GraphFlow is a Rust CLI demo built with [Pocket Flow](https://github.com/The-Poc
 
 - CLI run (stdin example):
   
-  ![CLI run](./assets/screenshot-cli.png)
+  ![CLI run](./assets/demo-cli.png)
 
 - Example graph output preview:
   
-  ![Graph preview](./assets/screenshot-graph.png)
+  ![Graph preview](./assets/graph.png)
 
 Place your own screenshots at the above paths or adjust filenames as needed.
 
