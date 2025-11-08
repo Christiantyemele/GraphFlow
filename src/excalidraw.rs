@@ -49,7 +49,7 @@ pub fn graphdata_to_excalidraw_scene_with_opts(g: &GraphData, allow_images: bool
             "isDeleted": false,
             "id": format!("decor-{}-{}", label, seed),
             "seed": seed,
-            "fillStyle": "hachure",
+            "fillStyle": "solid",
             "strokeWidth": 1,
             "strokeStyle": "solid",
             "roughness": 0,
@@ -99,8 +99,8 @@ pub fn graphdata_to_excalidraw_scene(g: &GraphData) -> Value {
     for n in &g.nodes {
         let seed = seed_from(&n.id);
         let (w, h) = node_size(&n.label);
-        let bg = color_or("#FFFFFF", &n.style.color);
         let stroke = "#111827";
+        let bg = color_or("#F3F4F6", &n.style.color);
         let rect = json!({
             "type": "rectangle",
             "version": 1,
@@ -108,7 +108,7 @@ pub fn graphdata_to_excalidraw_scene(g: &GraphData) -> Value {
             "isDeleted": false,
             "id": format!("node-{}", n.id),
             "seed": seed,
-            "fillStyle": "hachure",
+            "fillStyle": "solid",
             "strokeWidth": 2,
             "strokeStyle": "solid",
             "roughness": 1,
@@ -139,7 +139,7 @@ pub fn graphdata_to_excalidraw_scene(g: &GraphData) -> Value {
             "isDeleted": false,
             "id": format!("node-label-{}", n.id),
             "seed": text_seed,
-            "fillStyle": "hachure",
+            "fillStyle": "solid",
             "strokeWidth": 1,
             "strokeStyle": "solid",
             "roughness": 0,
@@ -181,15 +181,17 @@ pub fn graphdata_to_excalidraw_scene(g: &GraphData) -> Value {
 
             let dx = end_x - start_x;
             let dy = end_y - start_y;
-
+            // Orthogonal routing: L-shape via (dx, 0) then (dx, dy)
+            let arrow_seed = seed_from(&(e.id.clone(), "arrow"));
+            let points = vec![vec![0.0, 0.0], vec![dx, 0.0], vec![dx, dy]];
             let arrow = json!({
                 "type": "arrow",
                 "version": 1,
-                "versionNonce": (seed as i64),
+                "versionNonce": (arrow_seed as i64),
                 "isDeleted": false,
                 "id": format!("edge-{}", e.id),
-                "seed": seed,
-                "fillStyle": "hachure",
+                "seed": arrow_seed,
+                "fillStyle": "solid",
                 "strokeWidth": 2,
                 "strokeStyle": "solid",
                 "roughness": 1,
@@ -203,27 +205,25 @@ pub fn graphdata_to_excalidraw_scene(g: &GraphData) -> Value {
                 "height": dy.abs(),
                 "boundElements": [],
                 "updated": 0,
-                "startBinding": Value::Null,
-                "endBinding": Value::Null,
                 "lastCommittedPoint": Value::Null,
-                "points": [[0.0, 0.0], [dx, dy]],
+                "points": points,
                 "startArrowhead": Value::Null,
                 "endArrowhead": "arrow"
             });
             arrows.push(arrow);
 
             if !e.label.is_empty() {
-                let midx = (start_x + end_x) / 2.0;
-                let midy = (start_y + end_y) / 2.0;
-                // Offset label perpendicular to the edge by 12px
-                let vx = end_x - start_x;
-                let vy = end_y - start_y;
-                let vlen = (vx*vx + vy*vy).sqrt().max(1.0);
-                let nx = -vy / vlen;
-                let ny =  vx / vlen;
+                // Segment-aware label: choose longest orthogonal segment
+                let (seg_mid_x, seg_mid_y, nx, ny) = if dx.abs() >= dy.abs() {
+                    // horizontal segment midpoint at (start_x + dx/2, start_y)
+                    (start_x + dx/2.0, start_y, 0.0, 1.0)
+                } else {
+                    // vertical segment midpoint at (end_x, start_y + dy/2)
+                    (end_x, start_y + dy/2.0, -1.0, 0.0)
+                };
                 let off = 12.0;
-                let lx = midx + nx * off;
-                let ly = midy + ny * off;
+                let lx = seg_mid_x + nx * off;
+                let ly = seg_mid_y + ny * off;
                 let lw = (e.label.len() as f64 * 9.0 + 8.0).max(24.0);
                 let lh = 20.0;
                 let lseed = seed_from(&(e.id.clone(), "label"));
@@ -234,7 +234,7 @@ pub fn graphdata_to_excalidraw_scene(g: &GraphData) -> Value {
                     "isDeleted": false,
                     "id": format!("edge-label-{}", e.id),
                     "seed": lseed,
-                    "fillStyle": "hachure",
+                    "fillStyle": "solid",
                     "strokeWidth": 1,
                     "strokeStyle": "solid",
                     "roughness": 0,
@@ -260,13 +260,99 @@ pub fn graphdata_to_excalidraw_scene(g: &GraphData) -> Value {
         }
     }
 
-    let bg = g.global_style.as_ref().map(|gs| gs.background.clone()).unwrap_or_else(|| "#FFFFFF".to_string());
+    // Compose layers: order matters (arrows under nodes, labels on top)
+    let mut elements: Vec<Value> = Vec::new();
+    // Containers behind everything
+    if let Some(conts) = g.containers.as_ref() {
+        let padding = 40.0;
+        for c in conts {
+            // compute bbox from children
+            let mut minx = f64::INFINITY; let mut miny = f64::INFINITY; let mut maxx = f64::NEG_INFINITY; let mut maxy = f64::NEG_INFINITY;
+            for id in &c.children {
+                if let Some(n) = g.nodes.iter().find(|n| &n.id == id) {
+                    let (w,h) = node_size(&n.label);
+                    minx = minx.min(n.x as f64 - w/2.0);
+                    miny = miny.min(n.y as f64 - h/2.0);
+                    maxx = maxx.max(n.x as f64 + w/2.0);
+                    maxy = maxy.max(n.y as f64 + h/2.0);
+                }
+            }
+            if !minx.is_finite() { continue; }
+            let x = minx - padding; let y = miny - padding; let w = (maxx-minx) + 2.0*padding; let h = (maxy-miny) + 2.0*padding;
+            let seed = seed_from(&(c.id.clone(), "container"));
+            let bg = c.style.as_ref().and_then(|s| s.bg.clone()).unwrap_or("#FFFFFF".to_string());
+            let rect = json!({
+                "type": "rectangle",
+                "version": 1,
+                "versionNonce": (seed as i64),
+                "isDeleted": false,
+                "id": format!("container-{}", c.id),
+                "seed": seed,
+                "fillStyle": "solid",
+                "strokeWidth": 2,
+                "strokeStyle": "solid",
+                "roughness": 0,
+                "opacity": 100,
+                "angle": 0,
+                "x": x,
+                "y": y,
+                "strokeColor": "#D1D5DB",
+                "backgroundColor": bg,
+                "width": w,
+                "height": h,
+                "boundElements": [],
+                "updated": 0,
+                "roundness": {"type": 3}
+            });
+            elements.push(rect);
+            // header chip/tag
+            let tag = c.style.as_ref().and_then(|s| s.label_tag.clone()).unwrap_or(c.label.clone());
+            let tag_w = (tag.len() as f64 * 7.5 + 24.0).max(48.0);
+            let tag_h = 20.0;
+            let tseed = seed_from(&(c.id.clone(), "container-tag"));
+            let label = json!({
+                "type": "text",
+                "version": 1,
+                "versionNonce": (tseed as i64),
+                "isDeleted": false,
+                "id": format!("container-tag-{}", c.id),
+                "seed": tseed,
+                "fillStyle": "solid",
+                "strokeWidth": 1,
+                "strokeStyle": "solid",
+                "roughness": 0,
+                "opacity": 100,
+                "angle": 0,
+                "x": x + 12.0,
+                "y": y + 8.0,
+                "strokeColor": "#6B7280",
+                "backgroundColor": "transparent",
+                "width": tag_w,
+                "height": tag_h,
+                "boundElements": [],
+                "updated": 0,
+                "text": tag,
+                "fontSize": 14,
+                "fontFamily": 1,
+                "textAlign": "left",
+                "verticalAlign": "top",
+                "baseline": 16
+            });
+            elements.push(label);
+        }
+    }
 
     // Compose layers: arrows first, then rectangles, then texts on top
-    let mut elements = Vec::new();
     elements.extend(arrows);
     elements.extend(rects);
     elements.extend(texts);
+
+    // app background color from global_style or default
+    let app_bg = g
+        .global_style
+        .as_ref()
+        .map(|gs| gs.background.clone())
+        .unwrap_or("#FFFFFF".to_string());
 
     json!({
         "type": "excalidraw",
@@ -274,7 +360,7 @@ pub fn graphdata_to_excalidraw_scene(g: &GraphData) -> Value {
         "source": "graphflow",
         "elements": elements,
         "appState": {
-            "viewBackgroundColor": bg,
+            "viewBackgroundColor": app_bg,
             "gridSize": 0
         },
         "files": {}

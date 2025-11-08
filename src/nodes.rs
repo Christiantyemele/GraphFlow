@@ -10,7 +10,7 @@ use crate::state::{AiStatus, SharedState, UserSession, UserTier, ChatInput, Inpu
 use crate::utils::{call_llm_ai_model, parse_media, db_save_graph, db_update_user_credits, process_payment, auth_authenticate, auth_validate_session, db_retrieve_graph};
 use serde_json::json;
 use chrono::Utc;
-use crate::excalidraw::graphdata_to_excalidraw_scene; // used elsewhere; keep if referenced
+// use crate::excalidraw::graphdata_to_excalidraw_scene; // not needed here
 
 // Generate a filesystem-friendly suggested filename from user text
 fn suggest_filename(text: &str) -> String {
@@ -412,8 +412,9 @@ impl Node for AIProcessingNode {
                     nodes: nodes.into_values().collect(),
                     edges,
                     layout_hints: Some(crate::state::LayoutHints { direction: "TB".to_string(), algorithm: "dagre".to_string() }),
-                    global_style: Some(crate::state::GlobalStyle { font: "Inter".to_string(), background: "#ffffff".to_string() }),
+                    global_style: Some(crate::state::GlobalStyle { font: "Inter".to_string(), background: "#ffffff".to_string(), theme: Some("minimal".to_string()) }),
                     decorations: None,
+                    containers: None,
                 }
             }
         };
