@@ -2,15 +2,137 @@ use pocketflow_rs::{Node, ProcessResult, Context, ProcessState};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::io::{self, Write};
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+use std::collections::{HashMap, BTreeMap, VecDeque};
 use crate::state::{AiStatus, SharedState, UserSession, UserTier, ChatInput, InputType, AiResponse, Graph, GraphData, PaymentInfo, PaymentStatus};
 use crate::utils::{call_llm_ai_model, parse_media, db_save_graph, db_update_user_credits, process_payment, auth_authenticate, auth_validate_session, db_retrieve_graph};
 use serde_json::json;
 use chrono::Utc;
+use crate::excalidraw::graphdata_to_excalidraw_scene; // used elsewhere; keep if referenced
+
+// Generate a filesystem-friendly suggested filename from user text
+fn suggest_filename(text: &str) -> String {
+    let mut s = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            s.push(ch.to_ascii_lowercase());
+        } else if ch.is_whitespace() || ch == '-' || ch == '_' {
+            if !s.ends_with('-') { s.push('-'); }
+        }
+        if s.len() >= 48 { break; }
+    }
+    let s = s.trim_matches('-');
+    if s.is_empty() { "graph".to_string() } else { s.to_string() }
+}
+
+// --- Auto layout helpers ---
+
+fn approx_node_size(label: &str) -> (f64, f64) {
+    let w = (label.len() as f64 * 10.0 + 30.0).max(100.0);
+    let h = 48.0;
+    (w, h)
+}
+
+fn apply_auto_layout(g: &mut GraphData, node_gap: f64, rank_gap: f64, dir: &str, _max_per_rank: usize) {
+    // Build adjacency and indegree
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    let mut indeg: HashMap<String, usize> = HashMap::new();
+    for n in &g.nodes { indeg.entry(n.id.clone()).or_insert(0); adj.entry(n.id.clone()).or_insert_with(Vec::new); }
+    for e in &g.edges {
+        if let (Some(_), Some(_)) = (indeg.get(&e.source), indeg.get(&e.target)) {
+            adj.entry(e.source.clone()).or_default().push(e.target.clone());
+            *indeg.entry(e.target.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Kahn topo
+    let mut q: VecDeque<String> = indeg.iter().filter(|(_, &d)| d==0).map(|(k,_)| k.clone()).collect();
+    let mut order: Vec<String> = Vec::new();
+    let mut indeg_mut = indeg.clone();
+    while let Some(u) = q.pop_front() {
+        order.push(u.clone());
+        if let Some(vs) = adj.get(&u) {
+            for v in vs {
+                if let Some(d) = indeg_mut.get_mut(v) {
+                    if *d > 0 { *d -= 1; if *d == 0 { q.push_back(v.clone()); } }
+                }
+            }
+        }
+    }
+    if order.len() != g.nodes.len() {
+        // Graph may have cycles; fall back to input order
+        order = g.nodes.iter().map(|n| n.id.clone()).collect();
+    }
+
+    // Longest-path rank assignment
+    let mut rank: HashMap<String, usize> = HashMap::new();
+    for id in &order { rank.insert(id.clone(), 0); }
+    for u in &order {
+        let ru = *rank.get(u).unwrap_or(&0);
+        if let Some(vs) = adj.get(u) {
+            for v in vs {
+                let entry = rank.entry(v.clone()).or_insert(0);
+                if ru + 1 > *entry { *entry = ru + 1; }
+            }
+        }
+    }
+
+    // Group nodes by rank preserving relative order
+    let mut by_rank: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for id in &order {
+        let r = *rank.get(id).unwrap_or(&0);
+        by_rank.entry(r).or_default().push(id.clone());
+    }
+
+    // (Reserved for future centering calculations)
+
+    // Map id -> position with multi-row packing per rank
+    let mut pos: HashMap<String, (f64, f64)> = HashMap::new();
+    for (r, ids) in &by_rank {
+        let r = *r as f64;
+        let chunks: Vec<&[String]> = ids.chunks(_max_per_rank.max(1)).collect();
+        // center rows/cols around 0
+        let rows = chunks.len() as f64;
+        let start_secondary = -((rows - 1.0) * rank_gap) / 2.0;
+        for (row_idx, chunk) in chunks.iter().enumerate() {
+            let count_primary = chunk.len() as f64;
+            let start_primary = -((count_primary - 1.0) * rank_gap) / 2.0;
+            for (col_idx, id) in chunk.iter().enumerate() {
+                let _ = approx_node_size(&g.nodes.iter().find(|n| n.id == **id).map(|n| n.label.clone()).unwrap_or_default());
+                let col = col_idx as f64;
+                let row = row_idx as f64;
+                let (x, y) = if dir == "TB" {
+                    // ranks go down (y), primary spread is x (within a row), rows stacked vertically
+                    let y = r * node_gap + (start_secondary + row * rank_gap);
+                    let x = start_primary + col * rank_gap;
+                    (x, y)
+                } else {
+                    // ranks go right (x), primary spread is y (within a column), rows stacked horizontally
+                    let x = r * node_gap + (start_secondary + row * rank_gap);
+                    let y = start_primary + col * rank_gap;
+                    (x, y)
+                };
+                pos.insert((*id).clone(), (x, y));
+            }
+        }
+    }
+
+    // Apply positions back into nodes
+    for n in &mut g.nodes {
+        if let Some((x, y)) = pos.get(&n.id) {
+            n.x = *x as f32;
+            n.y = *y as f32;
+        }
+    }
+}
 
 pub struct GetQuestionNode;
 
 #[async_trait]
 impl Node for GetQuestionNode {
+    // ... (rest of the code remains the same)
     type State = SharedState;
 
     async fn execute(&self, _context: &Context) -> Result<serde_json::Value> {
@@ -247,46 +369,58 @@ impl Node for AIProcessingNode {
             return Ok(json!(ai_response));
         }
 
-        let prompt = format!("Process this chat input: {}", chat_input.content);
+        // Ask the LLM to output ONLY valid JSON matching our GraphData schema.
+        let prompt = format!(
+            "Output ONLY valid JSON matching this schema. No prose, no markdown.\\n\\nSchema: {{\\n  \"nodes\": [{{\"id\":string,\"label\":string,\"x\":number,\"y\":number,\"style\":{{\"shape\":string,\"color\":string}}}}],\\n  \"edges\": [{{\"id\":string,\"source\":string,\"target\":string,\"label\":string,\"style\":{{\"line\":string,\"arrow\":string}}}}],\\n  \"layout_hints\": {{\"direction\":string,\"algorithm\":string}},\\n  \"global_style\": {{\"font\":string,\"background\":string}},\\n  \"decorations\": [{{\\n     \"type\": \"icon\"|\"image\"|\"note\",\\n     \"target\": string|null,\\n     \"builtin\": string|null,\\n     \"url\": string|null,\\n     \"size\": {{\"w\":number,\"h\":number}}|null,\\n     \"offset\": {{\"dx\":number,\"dy\":number}}|null,\\n     \"text\": string|null\\n  }}] | null\\n}}\\n\\nRules:\\n- Include \"decorations\" ONLY if it materially improves comprehension (e.g., salesperson icon in a sales pipeline). Otherwise omit it.\\n- Use at most 3 decorations.\\n- Prefer builtins: salesperson, email, database, model, search.\\n- No external URLs; if needed use \"url\": \"builtin:<name>\" or omit.\\n- Choose simple, readable colors and shapes.\\n\\nInstruction: Convert this description into the JSON schema above: \"{}\"\\n\\nReturn JSON only.",
+            chat_input.content
+        );
+
         let ai_response_str = call_llm_ai_model(&prompt, &tier).await.map_err(|e| anyhow::anyhow!(e))?;
 
-        let mut nodes: std::collections::BTreeMap<String, crate::state::NodeData> = std::collections::BTreeMap::new();
-        let mut edges: Vec<crate::state::EdgeData> = Vec::new();
+        // Try to parse strict JSON GraphData from the LLM.
+        let graph_data: GraphData = match serde_json::from_str(&ai_response_str) {
+            Ok(gd) => gd,
+            Err(_e) => {
+                // Fallback: heuristic edge-list parser (A -> B -> C, commas separate statements)
+                let mut nodes: std::collections::BTreeMap<String, crate::state::NodeData> = std::collections::BTreeMap::new();
+                let mut edges: Vec<crate::state::EdgeData> = Vec::new();
 
-        let content = chat_input.content.replace("\n", ",");
-        let mut edge_counter = 0usize;
-        for part in content.split(',') {
-            let s = part.trim();
-            if s.is_empty() { continue; }
-            // Support chains: A -> B -> C
-            let tokens: Vec<String> = s.split("->").map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
-            if tokens.len() >= 2 {
-                for w in tokens.windows(2) {
-                    let from = w[0].clone();
-                    let to = w[1].clone();
-                    if !nodes.contains_key(&from) {
-                        nodes.insert(from.clone(), crate::state::NodeData { id: from.clone(), label: from.clone(), x: (nodes.len() as f32)*160.0, y: 0.0, style: crate::state::NodeStyle { shape: "rectangle".to_string(), color: "#4F46E5".to_string() } });
+                let content = chat_input.content.replace("\n", ",");
+                let mut edge_counter = 0usize;
+                for part in content.split(',') {
+                    let s = part.trim();
+                    if s.is_empty() { continue; }
+                    let tokens: Vec<String> = s.split("->").map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+                    if tokens.len() >= 2 {
+                        for w in tokens.windows(2) {
+                            let from = w[0].clone();
+                            let to = w[1].clone();
+                            if !nodes.contains_key(&from) {
+                                nodes.insert(from.clone(), crate::state::NodeData { id: from.clone(), label: from.clone(), x: (nodes.len() as f32)*160.0, y: 0.0, style: crate::state::NodeStyle { shape: "rectangle".to_string(), color: "#4F46E5".to_string() } });
+                            }
+                            if !nodes.contains_key(&to) {
+                                nodes.insert(to.clone(), crate::state::NodeData { id: to.clone(), label: to.clone(), x: (nodes.len() as f32)*160.0, y: 120.0, style: crate::state::NodeStyle { shape: "rectangle".to_string(), color: "#4F46E5".to_string() } });
+                            }
+                            let eid = format!("e{}", edge_counter);
+                            edge_counter += 1;
+                            edges.push(crate::state::EdgeData { id: eid, source: from, target: to, label: String::new(), style: crate::state::EdgeStyle { line: "smooth".to_string(), arrow: "end".to_string() } });
+                        }
                     }
-                    if !nodes.contains_key(&to) {
-                        nodes.insert(to.clone(), crate::state::NodeData { id: to.clone(), label: to.clone(), x: (nodes.len() as f32)*160.0, y: 120.0, style: crate::state::NodeStyle { shape: "rectangle".to_string(), color: "#4F46E5".to_string() } });
-                    }
-                    let eid = format!("e{}", edge_counter);
-                    edge_counter += 1;
-                    edges.push(crate::state::EdgeData { id: eid, source: from, target: to, label: String::new(), style: crate::state::EdgeStyle { line: "smooth".to_string(), arrow: "end".to_string() } });
+                }
+
+                GraphData {
+                    nodes: nodes.into_values().collect(),
+                    edges,
+                    layout_hints: Some(crate::state::LayoutHints { direction: "TB".to_string(), algorithm: "dagre".to_string() }),
+                    global_style: Some(crate::state::GlobalStyle { font: "Inter".to_string(), background: "#ffffff".to_string() }),
+                    decorations: None,
                 }
             }
-        }
-
-        let graph_data = GraphData {
-            nodes: nodes.into_values().collect(),
-            edges,
-            layout_hints: Some(crate::state::LayoutHints { direction: "TB".to_string(), algorithm: "dagre".to_string() }),
-            global_style: Some(crate::state::GlobalStyle { font: "Inter".to_string(), background: "#ffffff".to_string() }),
         };
 
         let ai_response = AiResponse {
             status: AiStatus::Success,
-            message: Some(ai_response_str),
+            message: Some("ok".to_string()),
             graph_data: Some(graph_data),
             credits_cost,
         };
@@ -356,8 +490,64 @@ impl Node for GraphRenderingNode {
             Ok(value) => {
                 // Assuming `rendered_graph_data` is the actual graph data
                 if let Some(rendered_graph_data_value) = value.get("rendered_graph_data") {
-                    shared_state.ai_response.graph_data = Some(serde_json::from_value(rendered_graph_data_value.clone())
-                        .map_err(|e| anyhow::anyhow!("Failed to deserialize GraphData: {}", e))?);
+                    let mut gd: GraphData = serde_json::from_value(rendered_graph_data_value.clone())
+                        .map_err(|e| anyhow::anyhow!("Failed to deserialize GraphData: {}", e))?;
+                    // Auto-layout to avoid overlaps, ignoring LLM-provided coordinates
+                    let (mut dir, node_gap, rank_gap) = ("LR".to_string(), 180.0, 140.0);
+                    if let Some(h) = gd.layout_hints.as_ref() {
+                        if !h.direction.is_empty() { dir = h.direction.to_uppercase(); }
+                    }
+                    apply_auto_layout(&mut gd, node_gap, rank_gap, &dir, 4);
+                    // Write Excalidraw scene if requested
+                    if let Some(path_val) = context.get("export_excalidraw_path").cloned() {
+                        if let Ok(opt_path) = serde_json::from_value::<Option<String>>(path_val) {
+                            if let Some(path) = opt_path {
+                                // read options
+                                let allow_images = context.get("allow_images").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let assets_dir = context.get("assets_dir").and_then(|v| v.as_str()).unwrap_or("");
+                                let scene = crate::excalidraw::graphdata_to_excalidraw_scene_with_opts(&gd, allow_images, assets_dir);
+                                let scene_str = serde_json::to_string_pretty(&scene).unwrap_or_else(|_| scene.to_string());
+                                if let Err(e) = fs::write(&path, scene_str) {
+                                    eprintln!("Failed to write Excalidraw scene to {}: {}", path, e);
+                                } else {
+                                    eprintln!("Excalidraw scene exported to {}", path);
+                                    // Auto-render PNG and SVG to project_root/docs/screens with suggested filename (independent of CWD)
+                                    let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+                                    let suggested = suggest_filename(&shared_state.chat_input.content);
+                                    let out_dir_abs = project_root.join("docs/screens");
+                                    if let Err(e) = fs::create_dir_all(&out_dir_abs) { eprintln!("Failed to ensure docs/screens: {}", e); }
+                                    let out_png_abs = out_dir_abs.join(format!("{}.png", suggested));
+                                    let out_svg_abs = out_dir_abs.join(format!("{}.svg", suggested));
+                                    let render_script_abs = project_root.join("tools/render-excalidraw/render.js");
+                                    // Canonicalize scene path if possible
+                                    let scene_abs = Path::new(&path).canonicalize().unwrap_or_else(|_| Path::new(&path).to_path_buf());
+                                    let status = Command::new("node")
+                                        .arg(render_script_abs)
+                                        .arg(&scene_abs)
+                                        .arg(&out_png_abs)
+                                        .status();
+                                    match status {
+                                        Ok(s) if s.success() => eprintln!("Rendered PNG -> {}", out_png_abs.display()),
+                                        Ok(s) => eprintln!("Renderer exited with status {}", s),
+                                        Err(e) => eprintln!("Failed to run renderer: {}", e),
+                                    }
+                                    // Render SVG
+                                    let render_script_abs = project_root.join("tools/render-excalidraw/render.js");
+                                    let status_svg = Command::new("node")
+                                        .arg(render_script_abs)
+                                        .arg(&scene_abs)
+                                        .arg(&out_svg_abs)
+                                        .status();
+                                    match status_svg {
+                                        Ok(s) if s.success() => eprintln!("Rendered SVG -> {}", out_svg_abs.display()),
+                                        Ok(s) => eprintln!("Renderer (SVG) exited with status {}", s),
+                                        Err(e) => eprintln!("Failed to run renderer for SVG: {}", e),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    shared_state.ai_response.graph_data = Some(gd);
                 }
                 shared_state.ai_response.status = AiStatus::Success;
                 context.set("shared_state", json!(shared_state.clone()));

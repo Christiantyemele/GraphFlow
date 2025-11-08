@@ -1,0 +1,9 @@
+{
+  "name": "render-excalidraw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "puppeteer": "^22.11.0"
+  }
+}

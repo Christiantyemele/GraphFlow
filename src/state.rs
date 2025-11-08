@@ -1,7 +1,8 @@
 use serde::{Serialize, Deserialize};
+use utoipa::ToSchema;
 use pocketflow_rs::ProcessState;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct SharedState {
     pub user_session: UserSession,
     pub chat_input: ChatInput,
@@ -34,7 +35,7 @@ impl ProcessState for SharedState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct UserSession {
     pub user_id: String,
     pub is_authenticated: bool,
@@ -43,21 +44,21 @@ pub struct UserSession {
     pub last_activity: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub enum UserTier {
     #[default]
     Free,
     Pro,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct ChatInput {
     pub input_type: InputType,
     pub content: String,
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub enum InputType {
     #[default]
     Text,
@@ -66,7 +67,7 @@ pub enum InputType {
     Video,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct AiResponse {
     pub status: AiStatus,
     pub message: Option<String>,
@@ -74,7 +75,7 @@ pub struct AiResponse {
     pub credits_cost: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub enum AiStatus {
     #[default]
     Success,
@@ -107,15 +108,16 @@ impl ProcessState for AiStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct GraphData {
     pub nodes: Vec<NodeData>,
     pub edges: Vec<EdgeData>,
     pub layout_hints: Option<LayoutHints>,
     pub global_style: Option<GlobalStyle>,
+    pub decorations: Option<Vec<Decoration>>, // optional visuals/icons/notes
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct NodeData {
     pub id: String,
     pub label: String,
@@ -124,7 +126,7 @@ pub struct NodeData {
     pub style: NodeStyle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct EdgeData {
     pub id: String,
     pub source: String,
@@ -133,31 +135,50 @@ pub struct EdgeData {
     pub style: EdgeStyle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct LayoutHints {
     pub direction: String,
     pub algorithm: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct GlobalStyle {
     pub font: String,
     pub background: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct NodeStyle {
     pub shape: String,
     pub color: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct EdgeStyle {
     pub line: String,
     pub arrow: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+pub struct DecorationOffset { pub dx: f32, pub dy: f32 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+pub struct DecorationSize { pub w: f32, pub h: f32 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+pub struct Decoration {
+    pub r#type: String,          // "icon" | "image" | "note"
+    pub target: Option<String>,  // node-id or edge-id; if None, use absolute
+    pub at_x: Option<f32>,       // absolute x (center), optional
+    pub at_y: Option<f32>,       // absolute y (center), optional
+    pub builtin: Option<String>, // e.g., salesperson, email
+    pub url: Option<String>,     // for assets (e.g., builtin:email or relative path)
+    pub size: Option<DecorationSize>,
+    pub offset: Option<DecorationOffset>,
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
 pub struct Graph {
     pub graph_id: String,
     pub user_id: String,

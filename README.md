@@ -2,7 +2,7 @@
 ![Banner](./assets/banner2.png)
 
 
-GraphFlow is a Rust CLI demo built with [Pocket Flow](https://github.com/The-Pocket/PocketFlow). It turns short natural-language descriptions or edge lists into graph structures using LLMs, with tiered routing:
+GraphFlow is a Rust CLI demo built with It turns short natural-language descriptions or edge lists into graph structures using LLMs, with tiered routing:
 
 - Free tier uses Anthropic Claude (Haiku by default)
 - Pro tier uses OpenAI (GPT-4o by default)
@@ -116,6 +116,89 @@ GraphFlow is a Rust CLI demo built with [Pocket Flow](https://github.com/The-Poc
   ![Graph preview](./assets/graph.png)
 
 Place your own screenshots at the above paths or adjust filenames as needed.
+
+## Excalidraw Rendering (PNG/SVG)
+
+You can export an Excalidraw scene JSON from the CLI and render exact Excalidraw-style images (no LLM):
+
+- Export scene JSON during run:
+  ```bash
+  echo "A -> B, B -> C" | cargo run -- --export-excalidraw out.excalidraw.json
+  ```
+
+- Render to PNG:
+  ```bash
+  node tools/render-excalidraw/render.js out.excalidraw.json docs/screens/graph.png
+  ```
+
+- Render to SVG:
+  ```bash
+  node tools/render-excalidraw/render.js out.excalidraw.json docs/screens/graph.svg
+  ```
+
+Notes:
+- Renderer uses a headless browser with Excalidraw’s UMD build for exact styling.
+- First run downloads Chromium via Puppeteer (internet required).
+- Recommended to store outputs under `docs/screens/` for docs.
+
+## REST Server & API Docs
+
+You can run GraphFlow as an HTTP server and consume it from your frontend. The server exposes OpenAPI documentation and an interactive Swagger UI.
+
+- Start the server (example):
+  ```bash
+  cargo run -- --serve --port 8080 --allow-images --assets-dir assets/icons
+  ```
+
+- Swagger UI:
+  - UI: http://localhost:8080/docs
+  - OpenAPI JSON: http://localhost:8080/api-doc/openapi.json
+
+- Endpoints:
+  - POST /graph/generate
+    - Input JSON:
+      - `content`: string (user description)
+      - `tier`: "free" | "pro" (optional)
+      - `allow_images`: boolean (optional, default false)
+      - `assets_dir`: string (optional, default `assets/icons`)
+    - Response JSON:
+      - `graph_data`: structured graph
+      - `scene`: Excalidraw scene JSON
+      - `artifacts`: suggested names for PNG/SVG
+
+  - POST /graph/render
+    - Input JSON:
+      - `scene`: Excalidraw scene JSON (optional if `graph_data` provided)
+      - `graph_data`: GraphData (optional if `scene` provided)
+      - `filename_hint`: optional string
+      - `formats`: ["png","svg"] (default both)
+    - Response JSON:
+      - `suggested`: base filename
+      - `png`: path if rendered
+      - `svg`: path if rendered
+
+- Curl examples:
+  - Generate:
+    ```bash
+    curl -s -X POST http://localhost:8080/graph/generate \
+      -H 'content-type: application/json' \
+      -d '{
+        "content": "Marketing -> Leads -> Sales",
+        "tier": "free",
+        "allow_images": true,
+        "assets_dir": "assets/icons"
+      }' | jq .
+    ```
+  - Render (from a scene JSON):
+    ```bash
+    curl -s -X POST http://localhost:8080/graph/render \
+      -H 'content-type: application/json' \
+      -d '{
+        "scene": { /* paste scene JSON here */ },
+        "filename_hint": "marketing-leads-sales",
+        "formats": ["png","svg"]
+      }' | jq .
+    ```
 
 ## Sample JSON Output
 

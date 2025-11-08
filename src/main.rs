@@ -2,6 +2,8 @@ mod flow;
 mod nodes;
 mod state;
 mod utils;
+mod excalidraw;
+mod server;
 
 use pocketflow_rs::Context;
 use flow::create_graph_flow;
@@ -11,6 +13,8 @@ use std::env;
 use std::fs;
 use std::io::{self, Read};
 use state::{UserSession, UserTier, ChatInput, InputType, AiResponse};
+use excalidraw::graphdata_to_excalidraw_scene;
+use server::run_server;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,11 +27,17 @@ async fn main() -> anyhow::Result<()> {
     //   --tier <free|pro> (default: free)
     //   --credits <u32> (default: 100)
     //   --input-file <path> (optional)
+    //   --export-excalidraw <path.json> (optional)
     let args: Vec<String> = env::args().collect();
     let mut user_id = env::var("GF_USER").unwrap_or_else(|_| "test".to_string());
     let mut tier = UserTier::Free;
     let mut credits_remaining: u32 = 100;
     let mut input_file: Option<String> = None;
+    let mut export_excalidraw: Option<String> = None;
+    let mut allow_images: bool = false;
+    let mut assets_dir: String = "assets/icons".to_string();
+    let mut serve: bool = false;
+    let mut port: u16 = 8080;
 
     let mut i = 1;
     while i < args.len() {
@@ -43,8 +53,18 @@ async fn main() -> anyhow::Result<()> {
                 i += 2; 
             }
             "--input-file" if i + 1 < args.len() => { input_file = Some(args[i+1].clone()); i += 2; }
+            "--export-excalidraw" if i + 1 < args.len() => { export_excalidraw = Some(args[i+1].clone()); i += 2; }
+            "--allow-images" => { allow_images = true; i += 1; }
+            "--assets-dir" if i + 1 < args.len() => { assets_dir = args[i+1].clone(); i += 2; }
+            "--serve" => { serve = true; i += 1; }
+            "--port" if i + 1 < args.len() => { port = args[i+1].parse().unwrap_or(8080); i += 2; }
             _ => { i += 1; }
         }
+    }
+
+    // Start REST server mode if requested
+    if serve {
+        return run_server(port, allow_images, assets_dir).await;
     }
 
     // Read chat input from file or stdin
@@ -80,6 +100,10 @@ async fn main() -> anyhow::Result<()> {
     // Initialize context and insert SharedState
     let mut context = Context::new();
     context.set("shared_state", json!(initial_state.clone()));
+    // Pass through export path so nodes can emit artifacts during the flow
+    context.set("export_excalidraw_path", json!(export_excalidraw.clone()));
+    context.set("allow_images", json!(allow_images));
+    context.set("assets_dir", json!(assets_dir));
 
     // Create and run the graph flow
     let graph_flow = create_graph_flow();
@@ -94,6 +118,17 @@ async fn main() -> anyhow::Result<()> {
     // Print the final state
     println!("\n=== Final SharedState ===");
     println!("{:#?}", final_shared_state);
+    
+    // Optional: export Excalidraw scene JSON
+    if let (Some(path), Some(graph_data)) = (export_excalidraw, final_shared_state.ai_response.graph_data.clone()) {
+        let scene = graphdata_to_excalidraw_scene(&graph_data);
+        let scene_str = serde_json::to_string_pretty(&scene).unwrap_or_else(|_| scene.to_string());
+        if let Err(e) = fs::write(&path, scene_str) {
+            eprintln!("Failed to write Excalidraw scene to {}: {}", path, e);
+        } else {
+            eprintln!("Excalidraw scene exported to {}", path);
+        }
+    }
     
     Ok(())
 }
