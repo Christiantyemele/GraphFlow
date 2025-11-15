@@ -10,7 +10,7 @@ use crate::state::{AiStatus, SharedState, UserSession, UserTier, ChatInput, Inpu
 use crate::utils::{call_llm_ai_model, parse_media, db_save_graph, db_update_user_credits, process_payment, auth_authenticate, auth_validate_session, db_retrieve_graph};
 use serde_json::json;
 use chrono::Utc;
-use crate::excalidraw::graphdata_to_excalidraw_scene; // used elsewhere; keep if referenced
+// use crate::excalidraw::graphdata_to_excalidraw_scene; // not needed here
 
 // Generate a filesystem-friendly suggested filename from user text
 fn suggest_filename(text: &str) -> String {
@@ -126,6 +126,41 @@ fn apply_auto_layout(g: &mut GraphData, node_gap: f64, rank_gap: f64, dir: &str,
             n.y = *y as f32;
         }
     }
+}
+
+// --- Intent helpers ---
+fn infer_diagram_kind(text: &str) -> (&'static str, &'static str) {
+    let lower = text.to_lowercase();
+    // Explicit tags have priority
+    if lower.contains(":sequence") || lower.contains("[mode: sequence]") || lower.contains("<sequence>") {
+        return ("sequence", "LR");
+    }
+    if lower.contains(":mindmap") || lower.contains("[mode: mindmap]") || lower.contains("<mindmap>") {
+        return ("mindmap", "TB");
+    }
+    if lower.contains(":system") || lower.contains("[mode: system]") || lower.contains("architecture") {
+        return ("system", "LR");
+    }
+    if lower.contains(":flow") || lower.contains("[mode: flow]") || lower.contains("workflow") || lower.contains("process") {
+        return ("flow", "TB");
+    }
+    // Heuristics
+    if lower.contains("->") || lower.contains("then") || lower.contains("next") { return ("flow", "TB"); }
+    if lower.contains("actor") || lower.contains("request") || lower.contains("service") { return ("system", "LR"); }
+    if lower.contains("brainstorm") || lower.contains("topics") { return ("mindmap", "TB"); }
+    if lower.contains(":") && lower.contains("->") { return ("sequence", "LR"); }
+    // Notes detection: bullets, numbered lists, many short lines
+    let lines: Vec<&str> = text.lines().collect();
+    let bullet_like = lines.iter().filter(|l| {
+        let s = l.trim_start();
+        s.starts_with("-") || s.starts_with("*") || s.chars().take(3).all(|c| c.is_numeric()) && s.contains('.')
+    }).count();
+    if bullet_like >= 2 || lines.len() >= 6 {
+        // Bias to mindmap for organization; TB is clearer for radial/branching
+        return ("mindmap", "TB");
+    }
+    // Default generic
+    ("auto", "TB")
 }
 
 pub struct GetQuestionNode;
@@ -370,10 +405,66 @@ impl Node for AIProcessingNode {
         }
 
         // Ask the LLM to output ONLY valid JSON matching our GraphData schema.
-        let prompt = format!(
-            "Output ONLY valid JSON matching this schema. No prose, no markdown.\\n\\nSchema: {{\\n  \"nodes\": [{{\"id\":string,\"label\":string,\"x\":number,\"y\":number,\"style\":{{\"shape\":string,\"color\":string}}}}],\\n  \"edges\": [{{\"id\":string,\"source\":string,\"target\":string,\"label\":string,\"style\":{{\"line\":string,\"arrow\":string}}}}],\\n  \"layout_hints\": {{\"direction\":string,\"algorithm\":string}},\\n  \"global_style\": {{\"font\":string,\"background\":string}},\\n  \"decorations\": [{{\\n     \"type\": \"icon\"|\"image\"|\"note\",\\n     \"target\": string|null,\\n     \"builtin\": string|null,\\n     \"url\": string|null,\\n     \"size\": {{\"w\":number,\"h\":number}}|null,\\n     \"offset\": {{\"dx\":number,\"dy\":number}}|null,\\n     \"text\": string|null\\n  }}] | null\\n}}\\n\\nRules:\\n- Include \"decorations\" ONLY if it materially improves comprehension (e.g., salesperson icon in a sales pipeline). Otherwise omit it.\\n- Use at most 3 decorations.\\n- Prefer builtins: salesperson, email, database, model, search.\\n- No external URLs; if needed use \"url\": \"builtin:<name>\" or omit.\\n- Choose simple, readable colors and shapes.\\n\\nInstruction: Convert this description into the JSON schema above: \"{}\"\\n\\nReturn JSON only.",
-            chat_input.content
-        );
+        let (kind, default_dir) = infer_diagram_kind(&chat_input.content);
+        let mut prompt = r##"
+You are the Logic Engine of a two-stage diagram system. Focus ONLY on logic & structure. Output JSON ONLY (no prose, no markdown).
+
+CONSTRAINTS
+- Do NOT include SVG, images, or styling.
+- Prefer DAGs unless cycles are explicit and labeled.
+- Avoid ambiguity; design a balanced, readable structure.
+
+WHEN TO INFER
+- If not provided, infer the suitable diagram family.
+- Fill minimal missing connections only when clearly implied.
+
+GRAPHFLOW SCHEMA (exact keys)
+{
+  "nodes": [{"id":"string_snake_case","label":"string","x":0,"y":0,"style":{"shape":"rect","color":"#F3F4F6"}}],
+  "edges": [{"id":"string_snake_case","source":"node_id","target":"node_id","label":"","style":{"line":"orthogonal","arrow":"end"}}],
+  "layout_hints": {"direction":"LR"|"TB","algorithm":"longest_path"},
+  "global_style": {"font":"Inter","background":"#FFFFFF","theme":"minimal"},
+  "decorations": null | [{
+     "type": "icon"|"note",
+     "target": "node_id_or_edge_id"|null,
+     "builtin": "database"|"model"|"search"|"email"|"salesperson"|null,
+     "url": "",
+     "size": {"w":number,"h":number}|null,
+     "offset": {"dx":number,"dy":number}|null,
+     "text": ""|null
+  }],
+  "containers": null | [{"id":"string_snake_case","label":"string","children":["node_id"],"style":{"bg":"#FFFFFF","border":"#D1D5DB","radius":12,"label_tag":"string"}}]
+}
+
+RULES
+- IDs unique, snake_case; no dangling edges; no duplicate edges.
+- Containers reference existing nodes only; limit decorations ≤ 3.
+- Decisions use edge labels; only add gateway nodes when required.
+
+DIAGRAM GUIDANCE
+- Kind: KINDSLOT. If "auto", choose among flow, system, sequence, mindmap.
+- Layout: set layout_hints.direction to "DIRSLOT" unless readability is better otherwise; algorithm "longest_path".
+- Flowchart: clear start/end, labeled branches, balanced symmetry.
+- System: group components in meaningful containers; orthogonal connectors.
+- Sequence: actors left→right; messages as labeled edges; consider TB if clearer.
+- Mindmap: central topic with branches; avoid cycles.
+
+DECORATIONS (icons by the model)
+- Only add when they materially improve comprehension (max 3).
+- Prefer built-in icon names matching the assets dir: database, model, search, email, salesperson.
+- Use one of:
+  - builtin: "<name>"
+  - url: "builtin:<name>"
+- Place relative to target center with small offset to corners (e.g., dx:-24, dy:-24) and size 16–24.
+- If no target is provided, you may use absolute at_x/at_y placement.
+
+OUTPUT
+Return ONE valid JSON object matching the schema above. No extra keys, no comments.
+
+USER_INPUT
+{content}
+"##.to_string();
+        prompt = prompt.replace("KINDSLOT", kind).replace("DIRSLOT", default_dir).replace("{content}", &chat_input.content);
 
         let ai_response_str = call_llm_ai_model(&prompt, &tier).await.map_err(|e| anyhow::anyhow!(e))?;
 
@@ -412,8 +503,9 @@ impl Node for AIProcessingNode {
                     nodes: nodes.into_values().collect(),
                     edges,
                     layout_hints: Some(crate::state::LayoutHints { direction: "TB".to_string(), algorithm: "dagre".to_string() }),
-                    global_style: Some(crate::state::GlobalStyle { font: "Inter".to_string(), background: "#ffffff".to_string() }),
+                    global_style: Some(crate::state::GlobalStyle { font: "Inter".to_string(), background: "#ffffff".to_string(), theme: Some("minimal".to_string()) }),
                     decorations: None,
+                    containers: None,
                 }
             }
         };

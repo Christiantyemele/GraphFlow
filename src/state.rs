@@ -11,6 +11,22 @@ pub struct SharedState {
     pub payment_info: Option<PaymentInfo>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+pub struct ContainerStyle {
+    pub bg: Option<String>,
+    pub border: Option<String>,
+    pub radius: Option<f32>,
+    pub label_tag: Option<String>, // small chip text top-left
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
+pub struct Container {
+    pub id: String,
+    pub label: String,
+    pub children: Vec<String>,
+    pub style: Option<ContainerStyle>,
+}
+
 impl SharedState {
     pub fn success_state() -> Self {
         let mut state = Self::default();
@@ -115,6 +131,7 @@ pub struct GraphData {
     pub layout_hints: Option<LayoutHints>,
     pub global_style: Option<GlobalStyle>,
     pub decorations: Option<Vec<Decoration>>, // optional visuals/icons/notes
+    pub containers: Option<Vec<Container>>,   // optional grouping boxes
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]
@@ -145,6 +162,8 @@ pub struct LayoutHints {
 pub struct GlobalStyle {
     pub font: String,
     pub background: String,
+    #[schema(example = "minimal")]
+    pub theme: Option<String>, // minimal | sketch
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, ToSchema)]

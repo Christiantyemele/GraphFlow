@@ -2,7 +2,7 @@
 ![Banner](./assets/banner2.png)
 
 
-GraphFlow is a Rust CLI demo built with It turns short natural-language descriptions or edge lists into graph structures using LLMs, with tiered routing:
+ExcalidGPT is a Rust CLI demo that turns short natural-language descriptions or edge lists into graph structures using LLMs, with tiered routing:
 
 - Free tier uses Anthropic Claude (Haiku by default)
 - Pro tier uses OpenAI (GPT-4o by default)
@@ -143,7 +143,7 @@ Notes:
 
 ## REST Server & API Docs
 
-You can run GraphFlow as an HTTP server and consume it from your frontend. The server exposes OpenAPI documentation and an interactive Swagger UI.
+You can run ExcalidGPT as an HTTP server and consume it from your frontend. The server exposes OpenAPI documentation and an interactive Swagger UI.
 
 - Start the server (example):
   ```bash
