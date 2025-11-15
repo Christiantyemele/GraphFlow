@@ -1,14 +1,14 @@
-# Design Doc: GraphFlow
+# Design Doc: ExcalidGPT
 
 ## Requirements
 
-GraphFlow is an AI-powered chat web application designed to transform user descriptions into visual flow diagrams and graphs. Users can articulate processes, ideas, or systems in natural language, and the application will automatically generate an interactive, visually appealing graph. The aesthetic of the generated graphs will mimic Excalidraw's clean, hand-drawn style, featuring rounded corners, smooth lines, and a lightweight sketch feel to promote creativity and a human touch.
+ExcalidGPT is an AI-powered chat web application designed to transform user descriptions into visual flow diagrams and graphs. Users can articulate processes, ideas, or systems in natural language, and the application will automatically generate an interactive, visually appealing graph. The aesthetic of the generated graphs will mimic Excalidraw's clean, hand-drawn style, featuring rounded corners, smooth lines, and a lightweight sketch feel to promote creativity and a human touch.
 
-The core problem GraphFlow solves is the translation of abstract textual descriptions into concrete, editable visual representations, making complex ideas easier to understand, organize, and share.
+The core problem ExcalidGPT solves is the translation of abstract textual descriptions into concrete, editable visual representations, making complex ideas easier to understand, organize, and share.
 
 ## Flow Design
 
-GraphFlow operates as a chat-based application where users interact with an AI assistant. The primary flow involves the user providing input, the AI processing it to generate a graph structure, and the visual editor displaying the result for user interaction and saving.
+ExcalidGPT operates as a chat-based application where users interact with an AI assistant. The primary flow involves the user providing input, the AI processing it to generate a graph structure, and the visual editor displaying the result for user interaction and saving.
 
 ### Applicable Design Pattern:
 

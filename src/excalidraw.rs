@@ -2,6 +2,9 @@ use crate::state::{GraphData};
 use serde_json::{json, Value};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::fs;
+use std::path::Path;
+use base64::{engine::general_purpose as b64, Engine as _};
 
 fn seed_from<T: Hash>(t: &T) -> u32 {
     let mut s = DefaultHasher::new();
@@ -20,15 +23,65 @@ fn builtin_emoji(name: &str) -> &str {
     }
 }
 
-pub fn graphdata_to_excalidraw_scene_with_opts(g: &GraphData, allow_images: bool, _assets_dir: &str) -> Value {
+pub fn graphdata_to_excalidraw_scene_with_opts(g: &GraphData, allow_images: bool, assets_dir: &str) -> Value {
     let mut scene = graphdata_to_excalidraw_scene(g);
     if !allow_images { return scene; }
 
-    // append decorations as text icons for now
     let decorations_opt = g.decorations.as_ref();
     if decorations_opt.is_none() { return scene; }
 
+    // Helper: resolve an asset path from decoration
+    let resolve_asset = |builtin: &Option<String>, url: &Option<String>| -> Option<(String, String)> {
+        // Returns (abs_path, mime)
+        // Priority: url starting with "builtin:" -> assets_dir/name.ext; else builtin field; else url as relative path
+        if let Some(u) = url {
+            if let Some(rest) = u.strip_prefix("builtin:") {
+                let candidates = [
+                    format!("{}/{}.svg", assets_dir, rest),
+                    format!("{}/{}.png", assets_dir, rest),
+                    format!("{}/{}.jpg", assets_dir, rest),
+                    format!("{}/{}.jpeg", assets_dir, rest),
+                ];
+                for p in candidates.iter() {
+                    let path = Path::new(p);
+                    if path.exists() {
+                        let mime = if p.ends_with(".svg") { "image/svg+xml" } else if p.ends_with(".png") { "image/png" } else if p.ends_with(".jpg") || p.ends_with(".jpeg") { "image/jpeg" } else { "application/octet-stream" };
+                        return Some((path.to_string_lossy().to_string(), mime.to_string()));
+                    }
+                }
+            } else {
+                // Treat url as relative path under assets_dir if not absolute
+                let path = if Path::new(u).is_absolute() { Path::new(u).to_path_buf() } else { Path::new(assets_dir).join(u) };
+                if path.exists() {
+                    let p = path.to_string_lossy().to_string();
+                    let mime = if p.ends_with(".svg") { "image/svg+xml" } else if p.ends_with(".png") { "image/png" } else if p.ends_with(".jpg") || p.ends_with(".jpeg") { "image/jpeg" } else { "application/octet-stream" };
+                    return Some((p, mime.to_string()));
+                }
+            }
+        }
+        if let Some(b) = builtin {
+            let key = b.to_lowercase();
+            let candidates = [
+                format!("{}/{}.svg", assets_dir, key),
+                format!("{}/{}.png", assets_dir, key),
+                format!("{}/{}.jpg", assets_dir, key),
+                format!("{}/{}.jpeg", assets_dir, key),
+            ];
+            for p in candidates.iter() {
+                let path = Path::new(p);
+                if path.exists() {
+                    let mime = if p.ends_with(".svg") { "image/svg+xml" } else if p.ends_with(".png") { "image/png" } else if p.ends_with(".jpg") || p.ends_with(".jpeg") { "image/jpeg" } else { "application/octet-stream" };
+                    return Some((path.to_string_lossy().to_string(), mime.to_string()));
+                }
+            }
+        }
+        None
+    };
+
+    // Collect extra elements and files
     let mut extra_elements: Vec<Value> = Vec::new();
+    let mut files_map: serde_json::Map<String, Value> = serde_json::Map::new();
+
     for d in decorations_opt.unwrap() {
         let mut cx = d.at_x.unwrap_or(0.0) as f64;
         let mut cy = d.at_y.unwrap_or(0.0) as f64;
@@ -38,6 +91,50 @@ pub fn graphdata_to_excalidraw_scene_with_opts(g: &GraphData, allow_images: bool
             }
         }
         if let Some(off) = &d.offset { cx += off.dx as f64; cy += off.dy as f64; }
+
+        // If decoration type is image/icon and asset exists, embed image; else fallback to emoji/text
+        let is_visual = d.r#type.to_lowercase() == "image" || d.r#type.to_lowercase() == "icon";
+        if is_visual {
+            if let Some((path, mime)) = resolve_asset(&d.builtin, &d.url) {
+                if let Ok(bytes) = fs::read(&path) {
+                    let data_b64 = b64::STANDARD.encode(bytes);
+                    let data_url = format!("data:{};base64,{}", mime, data_b64);
+                    let file_id_seed = seed_from(&(path.clone(), mime.clone()));
+                    let file_id = format!("file-{}-{}", file_id_seed, path.rsplit('/').next().unwrap_or("asset"));
+                    // Insert into files map
+                    files_map.insert(file_id.clone(), json!({
+                        "id": file_id,
+                        "dataURL": data_url,
+                        "mimeType": mime,
+                        "created": 0,
+                        "lastRetrieved": 0
+                    }));
+                    // Place image element
+                    let (w, h) = d.size.as_ref().map(|s| (s.w as f64, s.h as f64)).unwrap_or((24.0, 24.0));
+                    let seed = seed_from(&(path.clone(), cx as i64, cy as i64));
+                    let el = json!({
+                        "type": "image",
+                        "version": 1,
+                        "versionNonce": (seed as i64),
+                        "isDeleted": false,
+                        "id": format!("decor-img-{}", seed),
+                        "seed": seed,
+                        "x": cx - w/2.0,
+                        "y": cy - h/2.0,
+                        "width": w,
+                        "height": h,
+                        "angle": 0,
+                        "opacity": 100,
+                        "fileId": file_id,
+                        "status": "saved"
+                    });
+                    extra_elements.push(el);
+                    continue;
+                }
+            }
+        }
+
+        // Fallback to text/emoji marker
         let label = if let Some(b) = &d.builtin { builtin_emoji(b).to_string() } else { d.text.clone().unwrap_or_else(|| "".to_string()) };
         if label.is_empty() { continue; }
         let size = d.size.as_ref().map(|s| (s.w as f64, s.h as f64)).unwrap_or((20.0, 20.0));
@@ -75,6 +172,14 @@ pub fn graphdata_to_excalidraw_scene_with_opts(g: &GraphData, allow_images: bool
 
     if let Some(arr) = scene.get_mut("elements").and_then(|v| v.as_array_mut()) {
         arr.extend(extra_elements);
+    }
+    // Populate files map if any
+    if !files_map.is_empty() {
+        if let Some(files_obj) = scene.get_mut("files").and_then(|v| v.as_object_mut()) {
+            for (k, v) in files_map {
+                files_obj.insert(k, v);
+            }
+        }
     }
     scene
 }
@@ -357,7 +462,7 @@ pub fn graphdata_to_excalidraw_scene(g: &GraphData) -> Value {
     json!({
         "type": "excalidraw",
         "version": 2,
-        "source": "graphflow",
+        "source": "excalidgpt",
         "elements": elements,
         "appState": {
             "viewBackgroundColor": app_bg,

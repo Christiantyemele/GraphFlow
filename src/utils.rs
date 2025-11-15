@@ -30,7 +30,7 @@ pub async fn call_llm_ai_model(prompt: &str, tier: &UserTier) -> Result<String, 
             let response = client.messages()
                 .create(
                     MessageCreateBuilder::new(&model, 1024)
-                        .system("You transform descriptions to graph structures. Be concise.")
+                        .system("You are a diagram generation engine. From any user input, infer the best diagram (flow, system architecture, sequence, or mindmap) and convert it into a clear, structured representation. If the input appears to be notes (bullets, numbered lists, paragraphs), summarize and organize them into the most helpful visual to accelerate understanding. Prefer JSON outputs that match the caller's requested schema. Use concise, readable naming, and pick layouts that minimize crossings. Keep responses compact and free of prose unless explicitly asked.")
                         .user(prompt)
                         .build()
                 )
@@ -67,7 +67,9 @@ pub async fn call_llm_ai_model(prompt: &str, tier: &UserTier) -> Result<String, 
             let messages = vec![
                 ChatCompletionRequestMessage::System(
                     ChatCompletionRequestSystemMessage {
-                        content: ChatCompletionRequestSystemMessageContent::Text("You transform descriptions to graph structures. Be concise.".to_string()),
+                        content: ChatCompletionRequestSystemMessageContent::Text(
+                            "You are a diagram generation engine. From any user input, infer the best diagram (flow, system architecture, sequence, or mindmap) and convert it into a clear, structured representation. If the input appears to be notes (bullets, numbered lists, paragraphs), summarize and organize them into the most helpful visual to accelerate understanding. Prefer JSON outputs that match the caller's requested schema. Use concise, readable naming, and pick layouts that minimize crossings. Keep responses compact and free of prose unless explicitly asked.".to_string()
+                        ),
                         name: None,
                     }
                 ),

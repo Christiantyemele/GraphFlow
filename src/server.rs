@@ -74,7 +74,9 @@ pub struct RenderResponse {
         crate::state::EdgeStyle,
         crate::state::Decoration,
         crate::state::DecorationSize,
-        crate::state::DecorationOffset
+        crate::state::DecorationOffset,
+        crate::state::Container,
+        crate::state::ContainerStyle
     )),
     tags(
         (name = "graph", description = "Graph generation and rendering APIs")
