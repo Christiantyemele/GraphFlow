@@ -7,7 +7,11 @@ use std::path::Path;
 use std::process::Command;
 use pocketflow_rs::Context as PfContext;
 use utoipa::{OpenApi, ToSchema};
+use utoipa::openapi::server::Server;
+use std::fs;
 use utoipa_swagger_ui::SwaggerUi;
+use tower_http::cors::{CorsLayer, Any};
+use axum::http::{Method, header};
 
 use crate::flow::create_graph_flow;
 use crate::state::{SharedState, UserSession, UserTier, ChatInput, InputType, AiResponse, GraphData};
@@ -86,10 +90,53 @@ pub struct ApiDoc;
 
 pub async fn run_server(port: u16, default_allow_images: bool, default_assets_dir: String) -> anyhow::Result<()> {
     let cfg = AppConfig { allow_images: default_allow_images, assets_dir: default_assets_dir };
+
+    // Build OpenAPI spec and inject the running server URL (or env override)
+    let mut openapi = ApiDoc::openapi();
+    let public_base = std::env::var("GRAPHFLOW_PUBLIC_BASE_URL")
+        .unwrap_or_else(|_| format!("http://localhost:{}", port));
+    openapi.servers = Some(vec![Server::new(public_base.clone())]);
+
+    // Persist spec to project root for consumers (e.g. frontend)
+    let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let spec_path = project_root.join("openapi.json");
+    let spec_str = serde_json::to_string_pretty(&openapi)
+        .unwrap_or_else(|_| "{}".to_string());
+    if let Err(e) = fs::write(&spec_path, spec_str) {
+        eprintln!("Failed to write OpenAPI spec to {}: {}", spec_path.display(), e);
+    }
+
+    // Configure CORS: allow common dev origins or override via env
+    let cors = {
+        // Env override: comma-separated list of origins
+        if let Ok(list) = std::env::var("GRAPHFLOW_CORS_ORIGINS") {
+            let origins: Vec<_> = list
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(origins)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+                .allow_credentials(true)
+        } else {
+            // Defaults for local dev
+            CorsLayer::new()
+                .allow_origin([
+                    "http://localhost:8080".parse().unwrap(),
+                    "http://localhost:8081".parse().unwrap(),
+                ])
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+                .allow_credentials(true)
+        }
+    };
+
     let app = Router::new()
         .route("/graph/generate", post(handle_generate))
         .route("/graph/render", post(handle_render))
-        .merge(SwaggerUi::new("/docs").url("/api-doc/openapi.json", ApiDoc::openapi()))
+        .merge(SwaggerUi::new("/docs").url("/api-doc/openapi.json", openapi.clone()))
+        .layer(cors)
         .with_state(Arc::new(cfg));
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
@@ -116,7 +163,8 @@ async fn handle_generate(State(cfg): State<Arc<AppConfig>>, Json(req): Json<Gene
 
     // Build shared state and run flow
     let initial_state = SharedState {
-        user_session: UserSession { user_id: "api".into(), is_authenticated: true, tier, credits_remaining: 100, last_activity: String::new() },
+        // Use placeholder user_id "test" to pass current AuthenticationNode logic
+        user_session: UserSession { user_id: "test".into(), is_authenticated: true, tier, credits_remaining: 100, last_activity: String::new() },
         chat_input: ChatInput { input_type: InputType::Text, content: req.content.clone(), timestamp: String::new() },
         ai_response: AiResponse { status: crate::state::AiStatus::Success, message: None, graph_data: None, credits_cost: 0 },
         current_graph: None,
